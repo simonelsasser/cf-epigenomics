@@ -1,0 +1,302 @@
+---
+title: "Comparing methyl/unmethyl-DIP with RRBS and Illumina 850k"
+output: html_notebook
+---
+
+# (c) Simon Elsässer, Rozina Caridha (2025)
+
+
+```{r}
+library(ggpubr)
+library(bedscout)
+#install via devtools from https://github.com/cnluzon/bedscout
+library(wigglescout)
+library(rtracklayer)
+library(reshape2)
+```
+
+Prepare Peaks
+```{r}
+peaks <- list(CxxC=rtracklayer::import('CxxC_broad/CxxC_broad_mfold5-50_q0.05_peaks.bed'),MBD=rtracklayer::import('MBD_broad/MBD_broad_mfold5-50_q0.01_peaks.bed'))
+peaks[[1]]$name <- "unme"
+peaks[[2]]$name <- "me"
+
+peaks_all <- union(peaks[[1]],peaks[[2]])
+
+
+anno_CxxC <- annotate_overlapping_features(peaks_all,peaks[[1]],name_field = "name")$nearby_features
+anno_MBD <- annotate_overlapping_features(peaks_all,peaks[[2]],name_field = "name")$nearby_features
+
+anno <- anno_CxxC
+anno[!is.na(anno_MBD)] <- 'me'
+anno[(!is.na(anno_MBD)) & (!is.na(anno_CxxC))] <- 'mixed'
+
+peaks_all$name <- anno
+
+rtracklayer::export.bed(peaks_all,'CxxC_MBD_peaks.hg38.bed')
+## add annotation
+
+## plot intersection
+plot_euler(peaks, names(peaks))
+```
+```{r}
+signal_tracks <- c(CxxC='Plasma_P2_CxxC_S28.rpgc.bw',MBD='Plasma_P2_MBD_S27.rpgc.bw',CpG='CpG.hg38.bw')
+```
+
+```{r}
+
+#rrbs <- rtracklayer::import('GSM6810003_CNVS-NORM-cfDNA-110000263-WGBS-Rep1.hg38.bigwig')
+#rrbs$score[rrbs$score<0]<-NULL
+#rrbs <- rrbs[!is.na(rrbs$score),]
+#rrbs <- rtracklayer::export(rrbs,'GSM6810003_cfDNA_RRBS_clean.hg38.bw')
+rrbs <- rtracklayer::import('GSM6810003_cfDNA_RRBS_clean.hg38.bw')
+
+#ground truth from RRBS
+pk_rrbs <- bw_loci('GSM6810003_cfDNA_RRBS_clean.hg38.bw',loci = peaks_all,labels = c('rrbs'))
+pk_rrbs$name <- pk_rrbs$rrbs
+pk_rrbs$score <-pk_rrbs$rrbs
+rtracklayer::export.bed(pk_rrbs[!is.na(pk_rrbs$score),],'CxxC_MBD_peaks.RRBS.hg38.bed')
+
+library(BSgenome.Hsapiens.UCSC.hg38)
+seqlengths(pk_rrbs) <- seqlengths(BSgenome.Hsapiens.UCSC.hg38)[seqlevels(pk_rrbs)]
+genome(pk_rrbs) <- "hg38"
+
+rtracklayer::export.bw(pk_rrbs[!is.na(pk_rrbs$score),],'CxxC_MBD_peaks.RRBS.hg38.bw')
+
+df_rrbs <- as.data.frame(pk_rrbs)
+ggdensity(df_rrbs,'rrbs')
+```
+
+
+```{r}
+pk_values <- bw_loci(signal_tracks,loci = peaks_all,labels = names(signal_tracks))
+
+pk_df <- as.data.frame(pk_values)
+pk_df$raw_me_ratio<-pk_df$MBD/(pk_df$MBD+pk_df$CxxC)
+pk_df$raw_unme_ratio<-pk_df$CxxC/(pk_df$MBD+pk_df$CxxC)
+pk_df$rrbs<- df_rrbs$rrbs
+pk_df$diff <- pk_df$raw_me_ratio - pk_df$rrbs
+
+peaks_all$name <- pk_df$raw_me_ratio
+
+peaks_all$score <- pk_df$raw_me_ratio
+
+
+rtracklayer::export.bed(peaks_all[!is.na(pk_df$raw_me_ratio),],'CxxC_MBD_peaks.hg38.bed')
+
+peaks_bw <- peaks_all
+seqlevels(peaks_bw,pruning.mode="coarse") <- seqlevels(rrbs)
+seqinfo(peaks_bw) <- seqinfo(rrbs)
+rtracklayer::export.bw(peaks_bw[!is.na(peaks_bw$score),],'CxxC_MBD_peaks.hg38.bw')
+
+peaks_diff <- peaks_all
+peaks_diff$score <- pk_df$diff
+seqlevels(peaks_diff,pruning.mode="coarse") <- seqlevels(rrbs)
+seqinfo(peaks_diff) <- seqinfo(rrbs)
+rtracklayer::export.bw(peaks_diff[!is.na(peaks_diff$score),],'CxxC_MBD_peaks_diffRRBS.hg38.bw')
+
+
+ggdensity(pk_df$diff)
+```
+```{r}
+ggscatter(pk_df,'raw_me_ratio','CxxC',size=0.5, alpha=0.2, color='name',palette = c('blue2','purple2','red2')) + coord_cartesian(xlim=c(0,1), ylim=c(0,500))
+```
+Methyl vs unmethyl signal
+```{r}
+pk_df$CxxC_ratio <- pk_df$CxxC/(pk_df$CpG*2500)
+pk_df$MBD_ratio <- pk_df$MBD/(pk_df$CpG*2500)
+pk_df$MBD_ratio_sqrt <- sqrt(pk_df$MBD)/(pk_df$CpG*120+5)
+```
+
+```{r}
+ggscatter(pk_df,'MBD_ratio','raw_me_ratio',size=0.5, alpha=0.2, color='name',palette = c('blue2','purple2','red2')) + coord_cartesian(xlim=c(0,2), ylim=c(0,1))
+```
+
+```{r}
+ggscatter(pk_df,'MBD_ratio_sqrt','raw_me_ratio',size=0.5, alpha=0.2, color='name',palette = c('blue2','purple2','red2')) + coord_cartesian(xlim=c(0,2), ylim=c(0,1))
+```
+```{r}
+pk_df$rrbs<- df_rrbs$rrbs
+ggscatter(pk_df,'raw_me_ratio','rrbs',size=0.5, alpha=0.2, color='name',palette = c('blue2','purple2','red2')) + coord_cartesian(xlim=c(0,1), ylim=c(0,1))
+```
+
+```{r}
+pk_df$CpGquant <- gtools::quantcut(pk_df$CpG, q = c(0, 0.05, 0.75, 0.9, 1), 
+                                 labels = c("1","2", "3", "4"))
+
+
+ggdensity(pk_df,"diff",color="CpGquant")
+```
+```{r}
+ggscatter(pk_df[pk_df$CpGquant==1,],'raw_me_ratio','rrbs',size=0.5, alpha=0.2)  + coord_cartesian(xlim=c(0,1), ylim=c(0,1))
+```
+
+
+```{r}
+ggscatter(pk_df[pk_df$name=='mixed',],'raw_me_ratio','rrbs',size=0.5, alpha=0.2, add='reg.line') + coord_cartesian(xlim=c(0,1), ylim=c(0,1))
+```
+
+```{r}
+summary(lm(rrbs ~ raw_me_ratio,pk_df))
+summary(lm(rrbs ~ raw_me_ratio,pk_df[pk_df$name=='mixed',]))
+```
+
+```{r}
+pk_df$rrbs<- df_rrbs$rrbs
+ggscatter(pk_df,'MBD_ratio_sqrt','rrbs',size=0.5, alpha=0.2, color='name',palette = c('blue2','purple2','red2')) + coord_cartesian(xlim=c(0,1), ylim=c(0,1))
+```
+```{r}
+ggscatter(pk_df[pk_df$name=='mixed',],'MBD_ratio_sqrt','rrbs',size=0.5, alpha=0.2, add='reg.line') + coord_cartesian(xlim=c(0,1), ylim=c(0,1))
+```
+
+```{r}
+summary(lm(rrbs ~ MBD_ratio_sqrt,pk_df))
+summary(lm(rrbs ~ MBD_ratio_sqrt,pk_df[pk_df$name=='mixed',]))
+```
+
+```{r}
+i850k <- rtracklayer::import('illumina850k.hg38.bed')
+i850k_anno <- bedscout::annotate_nearby_features(i850k,peaks_all,name_field = 'name',distance_cutoff = 100)
+i850k_anno$nearby_features[is.na(i850k_anno$nearby_features)]<-'none'
+
+df_i850k_cov <- bw_loci(bwfiles = signal_tracks,loci = i850k)
+```
+
+```{r}
+df_i850k_cov$covered <- 'none'
+df_i850k_cov$covered[df_i850k_cov$Plasma_P2_CxxC_S28.rpgc > 0] <- 'CxxC'
+df_i850k_cov$covered[df_i850k_cov$Plasma_P2_MBD_S27.rpgc > 0] <- 'MBD2'
+df_i850k_cov$covered[df_i850k_cov$Plasma_P2_CxxC_S28.rpgc > 0 & df_i850k_cov$Plasma_P2_MBD_S27.rpgc > 0] <- 'both'
+table(df_i850k_cov$covered)
+```
+
+```{r}
+anno_i850k <- annotate_overlapping_features(peaks_all,i850k,name_field = 'name')
+anno_i850k$overlap <- 'no'
+anno_i850k$overlap[!is.na(anno_i850k$nearby_features)] <- 'yes'
+table(anno_i850k$overlap)
+```
+
+```{r}
+
+pk_df$mixed <- abs(log(pk_df$CxxC/pk_df$MBD,2)) < 4 & pk_df$CxxC > 30 & pk_df$MBD > 20
+ggscatter(pk_df,'MBD','CxxC',size=0.5, alpha=0.2, color='name',palette = c('blue2','purple2','red2')) + coord_cartesian(xlim=c(0,500), ylim=c(0,500))
+```
+
+Methyl/unmethyl vs CpG density
+```{r}
+ggdensity(pk_df[pk_df$name=='me',],'MBD') + coord_cartesian(xlim=c(0,100))
+```
+```{r}
+ggdensity(pk_df[pk_df$name=='unme',],'CxxC') + coord_cartesian(xlim=c(0,300))
+```
+
+
+
+```{r}
+ggdensity(pk_df,'MBD') + coord_cartesian(xlim=c(0,100))
+```
+
+
+Methyl/unmethyl vs CpG density
+```{r}
+ggscatter(pk_df,'MBD','CxxC',size=0.5, alpha=0.2, color='CpG') + coord_cartesian(xlim=c(0,500), ylim=c(0,500))
+```
+
+```{r}
+ggscatter(pk_df,'MBD_ratio','CxxC_ratio',size=0.5, alpha=0.2, color='CpG') + coord_cartesian(xlim=c(0,1.5), ylim=c(0,1.5))
+```
+
+
+
+```{r}
+ggscatter(pk_df,'MBD','MBD_ratio',size=0.5, alpha=0.2, color='CpG') + coord_cartesian(xlim=c(0,300), ylim=c(0,1.5))
+```
+
+```{r}
+ggscatter(pk_df,'CxxC','CxxC_ratio',size=0.5, alpha=0.2, color='CpG') + coord_cartesian(xlim=c(0,300), ylim=c(0,1.5))
+```
+```{r}
+pk_df$signal_sum <-pk_df$CxxC_ratio + pk_df$MBD_ratio
+ggscatter(pk_df,'CxxC_ratio','signal_sum',size=0.5, alpha=0.1, color='name',palette = c('blue2','purple2','red2'),add = "reg.line") + coord_cartesian(xlim=c(0,2),ylim=c(0,3))
+```
+
+```{r}
+pk_df$signal_sum <-pk_df$CxxC_ratio + pk_df$MBD_ratio
+ggscatter(pk_df,'MBD_ratio','signal_sum',size=0.5, alpha=0.1, color='name',palette = c('blue2','purple2','red2'),add = "reg.line") + coord_cartesian(xlim=c(0,2),ylim=c(0,3))
+```
+```{r}
+ggdensity(pk_df,'signal_sum',color="name",) + coord_cartesian(xlim=c(0,3))
+```
+
+
+```{r}
+pk_df$me_ratio<-pk_df$MBD_ratio/(pk_df$MBD_ratio+pk_df$CxxC_ratio)
+pk_df$unme_ratio<-pk_df$CxxC_ratio/(pk_df$MBD_ratio+pk_df$CxxC_ratio)
+
+peaks_all$name <- pk_df$me_ratio
+pk_df$me_ratio[is.na(pk_df$me_ratio)]<-0
+
+peaks_all$score <- pk_df$me_ratio
+
+
+rtracklayer::export.bed(peaks_all,'CxxC_MBD_peaks.hg38.bed')
+## add annotation
+
+
+ggdensity(pk_df,'me_ratio')
+```
+
+
+```{r}
+ggscatter(pk_df,'me_ratio','raw_me_ratio',size=0.5, alpha=0.2, color='CpG') + coord_cartesian(xlim=c(0,1), ylim=c(0,1))
+```
+
+
+```{r}
+ggscatter(pk_df,'MBD_ratio','CxxC_ratio',size=0.5, alpha=0.2, color='CpG') + coord_cartesian(xlim=c(0,500), ylim=c(0,500))
+```
+
+```{r}
+ggdensity(pk_df,'CpG',,size=0.5, alpha=0.2)
+```
+
+```{r}
+ggdensity(pk_df,'MBD',,size=0.5, alpha=0.2) + coord_cartesian(xlim=c(0,200))
+```
+```{r}
+ggdensity(pk_df,'CxxC',,size=0.5, alpha=0.2) + coord_cartesian(xlim=c(0,500))
+```
+
+
+```{r}
+ggscatter(pk_df,'MBD','CpG',size=0.5, alpha=0.2, color='mixed',palette = c('black','red4')) + coord_cartesian(xlim=c(0,500))
+```
+```{r}
+ggscatter(pk_df,'CxxC','CpG',size=0.5, alpha=0.2, color='mixed',palette = c('black','red4')) + coord_cartesian(xlim=c(0,500))
+```
+```{r}
+pk_df$signal_sum <-pk_df$CxxC + pk_df$MBD
+ggscatter(pk_df,'CpG','signal_sum',size=0.5, alpha=0.1, color='name',palette = c('blue2','purple2','red2'),add = "reg.line") + coord_cartesian(ylim=c(0,400))
+```
+
+```{r}
+pk_df$signal_sqrtsum <- sqrt(pk_df$CxxC) + sqrt(pk_df$MBD)
+ggscatter(pk_df,'CpG','signal_sqrtsum',size=0.5, alpha=0.2, color='name',palette = c('blue2','purple2','red2'),add = "reg.line") + coord_cartesian(ylim=c(0,20))
+```
+
+```{r}
+pk_df$signal_sqrtsum <- sqrt(pk_df$CxxC) + sqrt(pk_df$MBD)
+ggscatter(pk_df,'CpG','signal_sqrtsum',size=0.5, alpha=0.2, color='mixed',palette = c('black','red4'),add = "reg.line") + coord_cartesian(ylim=c(0,20))
+```
+
+```{r}
+rtracklayer::export.bed(pk_values[pk_df$mixed,],'me_unme_mixed_peaks.bed')
+```
+
+```{r}
+pk_df <- as.data.frame(pk_values)
+ggscatter(pk_df,'MBD','CxxC') + coord_cartesian(xlim=c(0,500), ylim=c(0,500))
+```
+
+
